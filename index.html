@@ -221,6 +221,15 @@
       const hud = document.querySelector("#hud");
       const settings = readSave();
       const palette = ["#ff668f", "#ffb35c", "#67edda", "#7f9bff", "#d579ff", "#f4e36b"];
+      const tetrominoes = [
+        [[0, 0], [1, 0], [2, 0], [3, 0]],
+        [[0, 0], [1, 0], [0, 1], [1, 1]],
+        [[0, 0], [1, 0], [2, 0], [1, 1]],
+        [[1, 0], [2, 0], [0, 1], [1, 1]],
+        [[0, 0], [1, 0], [1, 1], [2, 1]],
+        [[0, 0], [0, 1], [1, 1], [2, 1]],
+        [[2, 0], [0, 1], [1, 1], [2, 1]]
+      ];
       const blades = [
         { id: "starter", name: "Neon Blue Laser", description: "A clean, classic cyan cut.", cost: 0, color: "#69f4ff", style: "laser", icon: "⚡", wave: 620 },
         { id: "gold", name: "Golden Flame Blade", description: "A warm arc with a fiery finish.", cost: 80, color: "#ffc65c", style: "flame", icon: "🔥", wave: 440 },
@@ -280,9 +289,10 @@
       function startGame() {
         ensureAudio();
         objects = []; particles = []; trail = []; pointer = null;
-        score = 0; runCoins = 0; combo = 0; comboTimer = 0; elapsed = 0; spawnTimer = .45; shake = 0;
+        score = 0; runCoins = 0; combo = 0; comboTimer = 0; elapsed = 0; spawnTimer = .9; shake = 0;
         updateHud();
         setScreen("playing");
+        spawn();
       }
       function pauseGame() {
         if (mode !== "playing") return;
@@ -437,9 +447,9 @@
       canvas.addEventListener("pointercancel", clearPointer);
       canvas.addEventListener("lostpointercapture", clearPointer);
 
-      function transform(body) {
+      function transformPolygon(body, polygon) {
         const c = Math.cos(body.angle), s = Math.sin(body.angle);
-        return body.poly.map(p => ({ x: body.x + p.x * c - p.y * s, y: body.y + p.x * s + p.y * c }));
+        return polygon.map(p => ({ x: body.x + p.x * c - p.y * s, y: body.y + p.x * s + p.y * c }));
       }
       function cross(a, b, p) { return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x); }
       function segmentCross(a, b, c, d) {
@@ -479,14 +489,22 @@
         for (let i = objects.length - 1; i >= 0; i--) {
           const body = objects[i];
           if (body.dead || body.type !== "block") continue;
-          const world = transform(body);
           let intersects = false;
-          for (let j = 0; j < world.length; j++) {
-            if (segmentCross(a, b, world[j], world[(j + 1) % world.length])) { intersects = true; break; }
+          const worldCells = body.cells.map(cell => transformPolygon(body, cell));
+          for (const cell of worldCells) {
+            for (let j = 0; j < cell.length; j++) {
+              if (segmentCross(a, b, cell[j], cell[(j + 1) % cell.length])) { intersects = true; break; }
+            }
+            if (intersects) break;
           }
           if (!intersects) continue;
-          const first = clipSide(world, a, b, 1), second = clipSide(world, a, b, -1);
-          if (first.length < 3 || second.length < 3) continue;
+          const first = [], second = [];
+          for (const cell of worldCells) {
+            const firstPart = clipSide(cell, a, b, 1), secondPart = clipSide(cell, a, b, -1);
+            if (firstPart.length >= 3) first.push(firstPart);
+            if (secondPart.length >= 3) second.push(secondPart);
+          }
+          if (!first.length || !second.length) continue;
           body.dead = true;
           makePiece(first, body, -1);
           makePiece(second, body, 1);
@@ -504,11 +522,12 @@
           if (body.style === "rainbow") pixelBurst(body.x, body.y);
         }
       }
-      function makePiece(worldPoly, body, direction) {
-        const center = worldPoly.reduce((acc, p) => ({ x: acc.x + p.x / worldPoly.length, y: acc.y + p.y / worldPoly.length }), { x: 0, y: 0 });
-        const local = worldPoly.map(p => ({ x: p.x - center.x, y: p.y - center.y }));
+      function makePiece(worldCells, body, direction) {
+        const points = worldCells.flat();
+        const center = points.reduce((acc, p) => ({ x: acc.x + p.x / points.length, y: acc.y + p.y / points.length }), { x: 0, y: 0 });
+        const cells = worldCells.map(cell => cell.map(p => ({ x: p.x - center.x, y: p.y - center.y })));
         objects.push({
-          ...body, x: center.x, y: center.y, poly: local, dead: false,
+          ...body, x: center.x, y: center.y, cells, dead: false,
           vx: body.vx + direction * 100 + (Math.random() - .5) * 60,
           vy: body.vy - 20 - Math.random() * 35,
           spin: body.spin + direction * (2 + Math.random() * 4),
@@ -522,19 +541,56 @@
         const baseX = W * (.14 + Math.random() * .72);
         for (let i = 0; i < group; i++) {
           const bomb = elapsed > 6 && Math.random() < .13 + difficulty * .06;
-          const sides = [4, 5, 6, 3][Math.floor(Math.random() * 4)];
-          const radius = 24 + Math.random() * 13;
-          const poly = [];
-          for (let j = 0; j < sides; j++) {
-            const angle = -Math.PI / 2 + j * Math.PI * 2 / sides;
-            const r = radius * (.82 + Math.random() * .28);
-            poly.push({ x: Math.cos(angle) * r, y: Math.sin(angle) * r });
+          const cells = [];
+          let radius;
+          if (bomb) {
+            radius = 24 + Math.random() * 13;
+          } else {
+            const shape = tetrominoes[Math.floor(Math.random() * tetrominoes.length)];
+            const cellSize = 24 + Math.random() * 4;
+            const minX = Math.min(...shape.map(([x]) => x)), maxX = Math.max(...shape.map(([x]) => x));
+            const minY = Math.min(...shape.map(([, y]) => y)), maxY = Math.max(...shape.map(([, y]) => y));
+            const centerX = (minX + maxX + 1) / 2, centerY = (minY + maxY + 1) / 2;
+            for (const [x, y] of shape) {
+              const left = (x - centerX) * cellSize, top = (y - centerY) * cellSize;
+              cells.push([
+                { x: left, y: top }, { x: left + cellSize, y: top },
+                { x: left + cellSize, y: top + cellSize }, { x: left, y: top + cellSize }
+              ]);
+            }
+            radius = Math.hypot((maxX - minX + 1) * cellSize / 2, (maxY - minY + 1) * cellSize / 2);
+          }
+          const margin = Math.min(W / 2, radius + 8);
+          let x, y, vx, vy;
+          if (bomb) {
+            x = Math.max(margin, Math.min(W - margin, baseX + (i ? (Math.random() - .5) * 95 : 0)));
+            y = H + radius + 10;
+            vx = (Math.random() - .5) * (170 + difficulty * 100);
+            vy = -(470 + Math.random() * 170 + difficulty * 85);
+          } else {
+            const edge = Math.floor(Math.random() * 4);
+            const speed = 100 + Math.random() * 90;
+            const angle = (Math.random() - .5) * .9;
+            if (edge === 0) {
+              x = -radius - 12; y = H * (.15 + Math.random() * .7);
+              vx = speed * Math.cos(angle); vy = speed * Math.sin(angle);
+            } else if (edge === 1) {
+              x = W + radius + 12; y = H * (.15 + Math.random() * .7);
+              vx = -speed * Math.cos(angle); vy = speed * Math.sin(angle);
+            } else if (edge === 2) {
+              x = W * (.15 + Math.random() * .7); y = -radius - 12;
+              vx = speed * Math.sin(angle); vy = speed * Math.cos(angle);
+            } else {
+              x = W * (.15 + Math.random() * .7); y = H + radius + 12;
+              vx = speed * Math.sin(angle); vy = -speed * Math.cos(angle);
+            }
           }
           objects.push({
-            type: bomb ? "bomb" : "block", x: Math.max(42, Math.min(W - 42, baseX + (i ? (Math.random() - .5) * 95 : 0))),
-            y: H + radius + 10, poly, radius, angle: Math.random() * Math.PI,
-            vx: (Math.random() - .5) * (170 + difficulty * 100), vy: -(470 + Math.random() * 170 + difficulty * 85),
-            spin: (Math.random() - .5) * 5, color: palette[Math.floor(Math.random() * palette.length)],
+            type: bomb ? "bomb" : "block", x, y, cells, radius, angle: Math.random() * Math.PI,
+            vx, vy,
+            spin: bomb ? (Math.random() - .5) * 5 : (Math.random() - .5) * 1.4,
+            floatPhase: Math.random() * Math.PI * 2, floatSpeed: 1 + Math.random() * .8,
+            color: palette[Math.floor(Math.random() * palette.length)],
             value: 0, dead: false, life: 0, sliced: false
           });
         }
@@ -586,7 +642,8 @@
           if (comboTimer > 0) { comboTimer -= dt; if (comboTimer <= 0) { combo = 0; updateHud(); } }
           for (const body of objects) {
             if (body.dead) continue;
-            body.vy += 620 * dt;
+            if (body.type === "bomb") body.vy += 620 * dt;
+            else body.y += Math.sin(elapsed * body.floatSpeed + body.floatPhase) * 12 * dt;
             body.x += body.vx * dt; body.y += body.vy * dt; body.angle += body.spin * dt;
             if (body.sliced) body.life -= dt;
             if (body.type === "bomb" && pointer && trail.length > 1) {
@@ -637,16 +694,19 @@
           ctx.fillStyle = "#fff0c2"; ctx.beginPath(); ctx.arc(13, -body.radius - 13, 3, 0, Math.PI * 2); ctx.fill();
           ctx.fillStyle = "rgba(255,255,255,.9)"; ctx.font = "bold 21px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("!", 0, 1);
         } else {
-          ctx.shadowColor = body.color; ctx.shadowBlur = body.sliced ? 15 : 19;
-          ctx.beginPath(); ctx.moveTo(body.poly[0].x, body.poly[0].y);
-          for (let i = 1; i < body.poly.length; i++) ctx.lineTo(body.poly[i].x, body.poly[i].y);
-          ctx.closePath();
-          const fill = ctx.createLinearGradient(-body.radius, -body.radius, body.radius, body.radius);
-          fill.addColorStop(0, "#ffffff"); fill.addColorStop(.1, body.color); fill.addColorStop(1, shade(body.color, -.28));
-          ctx.fillStyle = fill; ctx.fill();
-          ctx.shadowBlur = 0; ctx.strokeStyle = "rgba(255,255,255,.56)"; ctx.lineWidth = 1.5; ctx.stroke();
-          ctx.globalAlpha = .35; ctx.fillStyle = "#fff";
-          ctx.beginPath(); ctx.ellipse(-body.radius * .18, -body.radius * .32, body.radius * .24, body.radius * .09, -.5, 0, Math.PI * 2); ctx.fill();
+          for (const cell of body.cells) {
+            ctx.beginPath(); ctx.moveTo(cell[0].x, cell[0].y);
+            for (let i = 1; i < cell.length; i++) ctx.lineTo(cell[i].x, cell[i].y);
+            ctx.closePath();
+            const fill = ctx.createLinearGradient(-body.radius, -body.radius, body.radius, body.radius);
+            fill.addColorStop(0, shade(body.color, .12)); fill.addColorStop(1, shade(body.color, -.55));
+            ctx.shadowColor = body.color; ctx.shadowBlur = body.sliced ? 14 : 22;
+            ctx.fillStyle = fill; ctx.fill();
+            ctx.shadowBlur = body.sliced ? 10 : 16;
+            ctx.strokeStyle = body.color; ctx.lineWidth = 3; ctx.lineJoin = "round"; ctx.stroke();
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = "rgba(255,255,255,.72)"; ctx.lineWidth = 1; ctx.stroke();
+          }
         }
         ctx.restore();
       }
